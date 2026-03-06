@@ -55,26 +55,36 @@ jobs:
       - run: npm install
       - name: Start app
         run: |
-          node server.js &
+          node server.js > /tmp/app.log 2>&1 &
           echo "App PID: $!"
+          sleep 3
+          echo "--- app.log ---"
+          cat /tmp/app.log
       - name: Wait for app to be ready
         run: |
           echo "Waiting for app on port 8080..."
-          for i in $(seq 1 15); do
+          for i in $(seq 1 30); do
             if curl -s http://localhost:8080 > /dev/null; then
               echo "✅ App is ready!"
               exit 0
             fi
-            echo "Attempt $i/15 — retrying in 1s..."
+            echo "Attempt $i/30 — retrying in 1s..."
+            cat /tmp/app.log
             sleep 1
           done
           echo "❌ App did not start in time"
+          echo "--- Final app.log ---"
+          cat /tmp/app.log
           exit 1
+      - name: Fix workspace permissions for ZAP
+        run: chmod 777 ${{ github.workspace }}
+
       - name: OWASP ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.9.0
         with:
           target: 'http://localhost:8080'
           fail_action: false
+          allow_issue_writing: false
 
   # ── Layer 4: Secret detection ─────────────────────────────────────────────
   secret-scan:
