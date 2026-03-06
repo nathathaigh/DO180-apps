@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 
 // ── Target folder ────────────────────────────────────────────────────────────
-const SCAN_DIR = path.join(__dirname, 'nodejs-helloworld');
+const SCAN_DIR = path.join(__dirname, 'nodejs-app');
 const EXTENSIONS = ['.js', '.ts', '.mjs', '.cjs'];
 
 // Recursively collect all JS files under the target directory
@@ -88,7 +88,7 @@ async function main() {
     process.exit(0);
   }
 
-  console.log(`\n🔍  Scanning ${files.length} file(s) in nodejs-helloworld/...\n`);
+  console.log(`\n🔍  Scanning ${files.length} file(s) in nodejs-app/...\n`);
 
   let failed = false;
   const summary = [];
