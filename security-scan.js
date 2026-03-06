@@ -1,31 +1,60 @@
-// security-scan.js — Claude AI security review for CI pipeline
+// security-scan.js — Claude AI security review + combined report
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
-// ── Target folder ────────────────────────────────────────────────────────────
 const SCAN_DIR = path.join(__dirname, 'nodejs-app');
 const EXTENSIONS = ['.js', '.ts', '.mjs', '.cjs'];
 
-// Recursively collect all JS files under the target directory
+// ── Collect JS files ──────────────────────────────────────────────────────
 function collectFiles(dir) {
   let results = [];
   if (!fs.existsSync(dir)) return results;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'node_modules') continue; // skip deps
+    if (entry.name === 'node_modules') continue;
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results = results.concat(collectFiles(full));
-    } else if (EXTENSIONS.includes(path.extname(entry.name))) {
-      results.push(full);
-    }
+    if (entry.isDirectory()) results = results.concat(collectFiles(full));
+    else if (EXTENSIONS.includes(path.extname(entry.name))) results.push(full);
   }
   return results;
 }
 
-// ── Claude scan ──────────────────────────────────────────────────────────────
-async function scanWithClaude(filePath) {
-  const code = fs.readFileSync(filePath, 'utf8');
-  const relative = path.relative(__dirname, filePath);
+// ── Collect npm audit report ──────────────────────────────────────────────
+function getNpmAuditReport() {
+  try {
+    const raw = execSync('npm audit --json', { cwd: SCAN_DIR }).toString();
+    return JSON.parse(raw);
+  } catch (e) {
+    // npm audit exits with code 1 when vulnerabilities found — output is still valid JSON
+    try { return JSON.parse(e.stdout?.toString() || '{}'); } catch { return {}; }
+  }
+}
+
+// ── Collect ZAP report ────────────────────────────────────────────────────
+function getZapReport() {
+  const zapPath = path.join(__dirname, 'report_json.json');
+  if (!fs.existsSync(zapPath)) return null;
+  try { return JSON.parse(fs.readFileSync(zapPath, 'utf8')); } catch { return null; }
+}
+
+// ── Claude combined analysis ──────────────────────────────────────────────
+async function analyzeWithClaude({ sourceFiles, npmAudit, zapReport }) {
+  // Build source code summary
+  const sourceSummary = sourceFiles.map(f => {
+    const rel = path.relative(__dirname, f);
+    const code = fs.readFileSync(f, 'utf8');
+    return `### ${rel}\n\`\`\`\n${code}\n\`\`\``;
+  }).join('\n\n');
+
+  // Build npm audit summary
+  const auditSummary = npmAudit?.metadata
+    ? `Vulnerabilities: ${JSON.stringify(npmAudit.metadata.vulnerabilities)}`
+    : 'npm audit report not available';
+
+  // Build ZAP summary
+  const zapSummary = zapReport
+    ? `ZAP found ${zapReport.site?.[0]?.alerts?.length || 0} alerts`
+    : 'ZAP report not available';
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -37,105 +66,105 @@ async function scanWithClaude(filePath) {
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 1000,
-      messages: [
-        {
-          role: 'user',
-          content: `You are a senior security engineer reviewing Node.js code.
-Analyze the code below for security vulnerabilities (e.g. injection, missing headers, exposed secrets, insecure dependencies usage, unhandled errors).
+      messages: [{
+        role: 'user',
+        content: `You are a senior security engineer. Analyze all security data below and produce a combined security report.
 
-Return ONLY a valid JSON object — no markdown, no explanation — in this exact format:
+## Source Code
+${sourceSummary}
+
+## npm audit Report
+${auditSummary}
+
+## OWASP ZAP Report
+${zapSummary}
+
+Return ONLY a valid JSON object in this exact format:
 {
-  "severity": "high" | "medium" | "low" | "none",
+  "overall_severity": "high" | "medium" | "low" | "none",
   "pass": true | false,
-  "issues": [
-    { "line": <number or null>, "issue": "<description>", "fix": "<recommended fix>" }
+  "summary": "<2-3 sentence overall summary>",
+  "findings": [
+    {
+      "source": "source_code" | "npm_audit" | "zap",
+      "severity": "high" | "medium" | "low",
+      "title": "<short title>",
+      "detail": "<what the issue is>",
+      "fix": "<how to fix it>"
+    }
   ]
 }
 
-Set "pass" to false if severity is "high" or "medium".
-
-File: ${relative}
-\`\`\`
-${code}
-\`\`\``,
-        },
-      ],
+Set "pass" to false if overall_severity is "high" or "medium".`,
+      }],
     }),
   });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${err}`);
-  }
-
+  if (!response.ok) throw new Error(`API error ${response.status}: ${await response.text()}`);
   const data = await response.json();
-  const raw = data.content.map((b) => b.text || '').join('');
-  const clean = raw.replace(/```json|```/g, '').trim();
-  return { file: relative, ...JSON.parse(clean) };
+  const raw = data.content.map(b => b.text || '').join('');
+  return JSON.parse(raw.replace(/```json|```/g, '').trim());
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Print report ──────────────────────────────────────────────────────────
+function printReport(result) {
+  const icon = { high: '🔴', medium: '🟡', low: '🔵', none: '✅' };
+
+  console.log('\n' + '═'.repeat(60));
+  console.log('       COMBINED SECURITY REPORT');
+  console.log('═'.repeat(60));
+  console.log(`Overall Severity : ${icon[result.overall_severity]} ${result.overall_severity.toUpperCase()}`);
+  console.log(`Status           : ${result.pass ? '✅ PASSED' : '❌ FAILED'}`);
+  console.log(`\nSummary: ${result.summary}`);
+  console.log('\n' + '─'.repeat(60));
+  console.log('FINDINGS');
+  console.log('─'.repeat(60));
+
+  if (result.findings.length === 0) {
+    console.log('  No issues found.');
+  } else {
+    result.findings.forEach((f, i) => {
+      console.log(`\n  ${i + 1}. [${icon[f.severity]} ${f.severity.toUpperCase()}] [${f.source}] ${f.title}`);
+      console.log(`     Issue : ${f.detail}`);
+      console.log(`     Fix   : ${f.fix}`);
+    });
+  }
+
+  console.log('\n' + '═'.repeat(60));
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error('❌  ANTHROPIC_API_KEY is not set.');
     process.exit(1);
   }
 
-  const files = collectFiles(SCAN_DIR);
+  console.log('\n📦  Collecting reports...');
+  const sourceFiles = collectFiles(SCAN_DIR);
+  console.log(`  ✅ Source files   : ${sourceFiles.length} file(s)`);
 
-  if (files.length === 0) {
-    console.warn(`⚠️  No JS files found in ${SCAN_DIR}`);
-    process.exit(0);
-  }
+  const npmAudit = getNpmAuditReport();
+  console.log(`  ✅ npm audit      : ${npmAudit?.metadata ? JSON.stringify(npmAudit.metadata.vulnerabilities) : 'not available'}`);
 
-  console.log(`\n🔍  Scanning ${files.length} file(s) in nodejs-app/...\n`);
+  const zapReport = getZapReport();
+  console.log(`  ✅ ZAP report     : ${zapReport ? `${zapReport.site?.[0]?.alerts?.length || 0} alert(s)` : 'not available'}`);
 
-  let failed = false;
-  const summary = [];
+  console.log('\n🤖  Sending to Claude for combined analysis...\n');
 
-  for (const file of files) {
-    const relative = path.relative(__dirname, file);
-    process.stdout.write(`  scanning ${relative} ... `);
+  try {
+    const result = await analyzeWithClaude({ sourceFiles, npmAudit, zapReport });
+    printReport(result);
 
-    try {
-      const result = await scanWithClaude(file);
-      summary.push(result);
+    // Save JSON report
+    const reportPath = path.join(__dirname, 'security-report.json');
+    fs.writeFileSync(reportPath, JSON.stringify(result, null, 2));
+    console.log(`\n📄  Full report saved to: security-report.json`);
 
-      if (result.issues.length === 0) {
-        console.log('✅  clean');
-      } else {
-        console.log(`⚠️  ${result.severity.toUpperCase()} (${result.issues.length} issue(s))`);
-        result.issues.forEach((issue, i) => {
-          const line = issue.line ? `line ${issue.line}` : 'general';
-          console.log(`      ${i + 1}. [${line}] ${issue.issue}`);
-          console.log(`         Fix: ${issue.fix}`);
-        });
-      }
-
-      if (!result.pass) failed = true;
-    } catch (err) {
-      console.log(`❌  error`);
-      console.error(`     ${err.message}`);
-      failed = true;
-    }
-  }
-
-  // ── Summary table ───────────────────────────────────────────────────────
-  console.log('\n' + '─'.repeat(60));
-  console.log('SCAN SUMMARY');
-  console.log('─'.repeat(60));
-  summary.forEach((r) => {
-    const icon = r.pass ? '✅' : '❌';
-    console.log(`${icon}  [${r.severity.padEnd(6)}]  ${r.file}`);
-  });
-  console.log('─'.repeat(60));
-
-  if (failed) {
-    console.log('\n🚨  Pipeline blocked — fix the issues above before merging.');
+    process.exit(result.pass ? 0 : 1);
+  } catch (err) {
+    console.error(`❌  Claude analysis failed: ${err.message}`);
     process.exit(1);
-  } else {
-    console.log('\n🎉  All files passed security review.');
-    process.exit(0);
   }
 }
 
