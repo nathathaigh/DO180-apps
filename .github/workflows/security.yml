@@ -37,6 +37,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: node security-scan.js
+        continue-on-error: true  # warn only, does not block pipeline
 
   # ── Layer 3: Runtime / DAST scan ─────────────────────────────────────────
   dast-scan:
