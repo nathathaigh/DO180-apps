@@ -2,10 +2,30 @@
 const fs = require('fs');
 const path = require('path');
 
-const FILES_TO_SCAN = ['app.js'];
+// ── Target folder ────────────────────────────────────────────────────────────
+const SCAN_DIR = path.join(__dirname, 'nodejs-helloworld');
+const EXTENSIONS = ['.js', '.ts', '.mjs', '.cjs'];
 
+// Recursively collect all JS files under the target directory
+function collectFiles(dir) {
+  let results = [];
+  if (!fs.existsSync(dir)) return results;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') continue; // skip deps
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results = results.concat(collectFiles(full));
+    } else if (EXTENSIONS.includes(path.extname(entry.name))) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+// ── Claude scan ──────────────────────────────────────────────────────────────
 async function scanWithClaude(filePath) {
   const code = fs.readFileSync(filePath, 'utf8');
+  const relative = path.relative(__dirname, filePath);
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -21,7 +41,7 @@ async function scanWithClaude(filePath) {
         {
           role: 'user',
           content: `You are a senior security engineer reviewing Node.js code.
-Analyze the code below for security vulnerabilities.
+Analyze the code below for security vulnerabilities (e.g. injection, missing headers, exposed secrets, insecure dependencies usage, unhandled errors).
 
 Return ONLY a valid JSON object — no markdown, no explanation — in this exact format:
 {
@@ -34,7 +54,7 @@ Return ONLY a valid JSON object — no markdown, no explanation — in this exac
 
 Set "pass" to false if severity is "high" or "medium".
 
-Code from ${filePath}:
+File: ${relative}
 \`\`\`
 ${code}
 \`\`\``,
@@ -51,53 +71,72 @@ ${code}
   const data = await response.json();
   const raw = data.content.map((b) => b.text || '').join('');
   const clean = raw.replace(/```json|```/g, '').trim();
-  return JSON.parse(clean);
+  return { file: relative, ...JSON.parse(clean) };
 }
 
+// ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   if (!process.env.ANTHROPIC_API_KEY) {
     console.error('❌  ANTHROPIC_API_KEY is not set.');
     process.exit(1);
   }
 
+  const files = collectFiles(SCAN_DIR);
+
+  if (files.length === 0) {
+    console.warn(`⚠️  No JS files found in ${SCAN_DIR}`);
+    process.exit(0);
+  }
+
+  console.log(`\n🔍  Scanning ${files.length} file(s) in nodejs-helloworld/...\n`);
+
   let failed = false;
+  const summary = [];
 
-  for (const file of FILES_TO_SCAN) {
-    if (!fs.existsSync(file)) {
-      console.warn(`⚠️  Skipping ${file} — file not found.`);
-      continue;
-    }
-
-    console.log(`\n🔍  Scanning ${file} with Claude...`);
+  for (const file of files) {
+    const relative = path.relative(__dirname, file);
+    process.stdout.write(`  scanning ${relative} ... `);
 
     try {
       const result = await scanWithClaude(file);
+      summary.push(result);
 
       if (result.issues.length === 0) {
-        console.log(`✅  No issues found in ${file}.`);
+        console.log('✅  clean');
       } else {
-        console.log(`\n📋  Results for ${file} [severity: ${result.severity.toUpperCase()}]`);
+        console.log(`⚠️  ${result.severity.toUpperCase()} (${result.issues.length} issue(s))`);
         result.issues.forEach((issue, i) => {
           const line = issue.line ? `line ${issue.line}` : 'general';
-          console.log(`\n  ${i + 1}. [${line}] ${issue.issue}`);
-          console.log(`     Fix: ${issue.fix}`);
+          console.log(`      ${i + 1}. [${line}] ${issue.issue}`);
+          console.log(`         Fix: ${issue.fix}`);
         });
       }
 
-      if (!result.pass) {
-        console.log(`\n❌  ${file} failed security review.`);
-        failed = true;
-      } else {
-        console.log(`\n✅  ${file} passed security review.`);
-      }
+      if (!result.pass) failed = true;
     } catch (err) {
-      console.error(`❌  Error scanning ${file}: ${err.message}`);
+      console.log(`❌  error`);
+      console.error(`     ${err.message}`);
       failed = true;
     }
   }
 
-  console.log(failed ? '\n🚨  Pipeline blocked — fix issues above.' : '\n🎉  All files passed.');
-  process.exit(failed ? 1 : 0);
+  // ── Summary table ───────────────────────────────────────────────────────
+  console.log('\n' + '─'.repeat(60));
+  console.log('SCAN SUMMARY');
+  console.log('─'.repeat(60));
+  summary.forEach((r) => {
+    const icon = r.pass ? '✅' : '❌';
+    console.log(`${icon}  [${r.severity.padEnd(6)}]  ${r.file}`);
+  });
+  console.log('─'.repeat(60));
+
+  if (failed) {
+    console.log('\n🚨  Pipeline blocked — fix the issues above before merging.');
+    process.exit(1);
+  } else {
+    console.log('\n🎉  All files passed security review.');
+    process.exit(0);
+  }
 }
 
 main();
