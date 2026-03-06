@@ -36,7 +36,7 @@ jobs:
       - name: Run Claude Security Scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: node security-scan.js  # runs from repo root, scans nodejs-app/
+        run: node security-scan.js
 
   # ── Layer 3: Runtime / DAST scan ─────────────────────────────────────────
   dast-scan:
@@ -60,7 +60,7 @@ jobs:
         uses: zaproxy/action-baseline@v0.9.0
         with:
           target: 'http://localhost:8080'
-          fail_action: false   # set to true to hard-fail on ZAP findings
+          fail_action: false
 
   # ── Layer 4: Secret detection ─────────────────────────────────────────────
   secret-scan:
@@ -74,5 +74,4 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
+          extra_args: --only-verified
