@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: nodejs-helloworld
+        working-directory: nodejs-app
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
@@ -36,7 +36,7 @@ jobs:
       - name: Run Claude Security Scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: node security-scan.js  # runs from repo root, scans nodejs-helloworld/
+        run: node security-scan.js  # runs from repo root, scans nodejs-app/
 
   # ── Layer 3: Runtime / DAST scan ─────────────────────────────────────────
   dast-scan:
@@ -45,7 +45,7 @@ jobs:
     needs: claude-scan
     defaults:
       run:
-        working-directory: nodejs-helloworld
+        working-directory: nodejs-app
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
