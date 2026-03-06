@@ -54,9 +54,22 @@ jobs:
           node-version: '18'
       - run: npm install
       - name: Start app
-        run: node app.js &
+        run: |
+          node server.js &
+          echo "App PID: $!"
       - name: Wait for app to be ready
-        run: npx wait-on http://localhost:8080 --timeout 15000
+        run: |
+          echo "Waiting for app on port 8080..."
+          for i in $(seq 1 15); do
+            if curl -s http://localhost:8080 > /dev/null; then
+              echo "✅ App is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/15 — retrying in 1s..."
+            sleep 1
+          done
+          echo "❌ App did not start in time"
+          exit 1
       - name: OWASP ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.9.0
         with:
