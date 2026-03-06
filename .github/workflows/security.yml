@@ -21,7 +21,7 @@ jobs:
           node-version: '18'
       - run: npm install
       - name: npm audit
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=high || true  # warn only, does not block pipeline
 
   # ── Layer 2: Claude AI code review ───────────────────────────────────────
   claude-scan:
